@@ -7,14 +7,16 @@ const storage = require('./storage.js');
 const whatsappHandler =  require('./whatsappHandler.js');
 
 (async () => {
-  const version = 'v0.10.5';
+  const version = 'v0.10.17';
   state.logger = pino({ mixin() { return { version }; } }, pino.destination('logs.txt'));
-  const autoSaver = setInterval(() => storage.save(), 5 * 60 * 1000);
+  let autoSaver = setInterval(() => storage.save(), 5 * 60 * 1000);
   ['SIGINT', 'uncaughtException', 'SIGTERM'].forEach((eventName) => process.on(eventName, async (err) => {
     clearInterval(autoSaver);
-    if (err) state.logger.error(err);
+    state.logger.error(err);
     state.logger.info('Exiting!');
-    await storage.save();
+    if (['SIGINT', 'SIGTERM'].includes(err)) {
+      await storage.save();
+    }
     process.exit();
   }));
 
@@ -23,17 +25,28 @@ const whatsappHandler =  require('./whatsappHandler.js');
   await utils.updater.run(version);
   state.logger.info('Update checked.');
 
-  await storage.syncTable();
-  state.logger.info('Synced table.');
+  const conversion = await utils.sqliteToJson.convert();
+  if (!conversion) {
+    state.logger.error('Conversion failed!');
+    process.exit(1);
+  }
+  state.logger.info('Conversion completed.');
 
   state.settings = await storage.parseSettings();
   state.logger.info('Loaded settings.');
+
+  clearInterval(autoSaver);
+  autoSaver = setInterval(() => storage.save(), state.settings.autoSaveInterval * 1000);
+  state.logger.info('Changed auto save interval.');
 
   state.contacts = await storage.parseContacts();
   state.logger.info('Loaded contacts.');
 
   state.chats = await storage.parseChats();
   state.logger.info('Loaded chats.');
+
+  state.lastMessages = await storage.parseLastMessages();
+  state.logger.info('Loaded last messages.');
 
   state.dcClient = await discordHandler.start();
   state.logger.info('Discord client started.');

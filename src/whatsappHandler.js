@@ -1,4 +1,4 @@
-const baileys = require('@adiwajshing/baileys');
+const baileys = require('@whiskeysockets/baileys');
 
 const utils = require('./utils.js');
 const state = require("./state.js");
@@ -19,7 +19,7 @@ const connectToWhatsApp = async (retry = 1) => {
         markOnlineOnConnect: false,
         shouldSyncHistoryMessage: () => false,
         generateHighQualityLinkPreview: false,
-        browser: [ 'WA2DC', 'Chrome', '4.0.0' ]
+        browser: ['WA2DC', 'Chrome', '4.0.0']
     });
     client.contacts = state.contacts;
 
@@ -56,7 +56,7 @@ const connectToWhatsApp = async (retry = 1) => {
         if (update.type === 'notify') {
             for await (const rawMessage of update.messages) {
                 const messageType = utils.whatsapp.getMessageType(rawMessage);
-                if (!utils.whatsapp.inWhitelist(rawMessage) || !utils.whatsapp.sentAfterStart(rawMessage) || !messageType) return;
+                if (!utils.whatsapp.inWhitelist(rawMessage) || !utils.whatsapp.sentAfterStart(rawMessage) || !messageType) continue;
 
                 const [nMsgType, message] = utils.whatsapp.getMessage(rawMessage, messageType);
                 state.dcClient.emit('whatsappMessage', {
@@ -99,12 +99,50 @@ const connectToWhatsApp = async (retry = 1) => {
         }
     });
 
+    client.ev.on('contacts.update', async (contacts) => {
+        for await (const contact of contacts) {
+            if (typeof contact.imgUrl === 'undefined') continue;
+            if (!utils.whatsapp.inWhitelist({ chatId: contact.id })) continue;
+
+            utils.whatsapp._profilePicsCache[contact.id] = await client.profilePictureUrl(contact.id, 'preview').catch(() => null);
+
+            if (!state.settings.ChangeNotifications) continue;
+            const removed = utils.whatsapp._profilePicsCache[contact.id] === null;
+            state.dcClient.emit('whatsappMessage', {
+                id: null,
+                name: "WA2DC",
+                content: "[BOT] " + (removed ? "User removed their profile picture!" : "User changed their profile picture!"),
+                profilePic: utils.whatsapp._profilePicsCache[contact.id],
+                channelJid: utils.whatsapp.getChannelJid({ chatId: contact.id }),
+                isGroup: contact.id.endsWith('@g.us'),
+                isForwarded: false,
+            });
+        }
+    });
+
+    client.ws.on(`CB:notification,type:status,set`, async (update) => {
+        if (!utils.whatsapp.inWhitelist({ chatId: update.attrs.from })) return;
+
+        if (!state.settings.ChangeNotifications) return;
+        const status = update.content[0]?.content?.toString();
+        if (!status) return;
+        state.dcClient.emit('whatsappMessage', {
+            id: null,
+            name: "WA2DC",
+            content: "[BOT] User changed their status to: " + status,
+            profilePic: utils.whatsapp._profilePicsCache[update.attrs.from],
+            channelJid: utils.whatsapp.getChannelJid({ chatId: update.attrs.from }),
+            isGroup: update.attrs.from.endsWith('@g.us'),
+            isForwarded: false,
+        });
+    });
+
     client.ev.on('discordMessage', async ({ jid, message }) => {
         const content = {};
         const options = {};
 
         if (state.settings.UploadAttachments) {
-            await Promise.all(message.attachments.map((file) => 
+            await Promise.all(message.attachments.map((file) =>
                 client.sendMessage(jid, utils.whatsapp.createDocumentContent(file))
                     .then(m => { state.lastMessages[message.id] = m.key.id })
             ));
@@ -120,7 +158,7 @@ const connectToWhatsApp = async (retry = 1) => {
         if (message.reference) {
             options.quoted = await utils.whatsapp.createQuoteMessage(message);
             if (options.quoted == null) {
-                message.channel.send("Couldn't find the message quoted. You can only reply to messages received after the bot went online. Sending the message without the quoted message.");
+                message.channel.send("Couldn't find the message quoted. You can only reply to last 500 messages. Sending the message without the quoted message.");
             }
         }
 
@@ -153,8 +191,10 @@ const connectToWhatsApp = async (retry = 1) => {
 };
 
 const actions = {
-    async start(newSession = false) {
-        ({ authState, saveState } = await utils.whatsapp.useStorageAuthState(newSession));
+    async start() {
+        const baileyState = await baileys.useMultiFileAuthState('./storage/baileys');
+        authState = baileyState.state;
+        saveState = baileyState.saveCreds;
         await connectToWhatsApp();
     },
 }

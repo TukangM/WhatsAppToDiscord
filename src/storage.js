@@ -1,48 +1,37 @@
-const sequelize = require('sequelize');
 const readline = require('readline');
+const fs = require('fs/promises');
+const path = require('path');
 const { Client, Intents } = require('discord.js');
 
 const state = require('./state.js');
 
+const bidirectionalMap = (capacity, data = {}) => {
+  const keys = Object.keys(data);
+  return new Proxy(
+    data,
+    {
+      set(target, prop, newVal) {
+        keys.push(prop, newVal);
+        if (keys.length > capacity) {
+          delete target[keys.shift()];
+          delete target[keys.shift()];
+        }
+        target[prop] = newVal;
+        target[newVal] = prop;
+        return true;
+      },
+    },
+  );
+};
 
 const storage = {
-  _connection: null,
-  get connection() {
-    if (this._connection) return this._connection;
-    this._connection = new sequelize.Sequelize('sqlite://storage.db', {
-      logging: false,
-      define: {
-        timestamps: false,
-        freezeTableName: true,
-      },
-    });
-    return this._connection;
-  },
-
-  _table: null,
-  get table() {
-    if (this._table) return this._table;
-    this._table = this.connection.define('WA2DC', {
-      name: {
-        type: sequelize.STRING,
-        primaryKey: true,
-      },
-      data: sequelize.TEXT,
-    });
-    return this._table;
-  },
-
-  async syncTable() {
-    await this.table.sync();
-  },
-
+  _storageDir: './storage/',
   async upsert(name, data) {
-    await this.table.upsert({ name, data });
+    await fs.writeFile(path.join(this._storageDir, name), data)
   },
 
   async get(name) {
-    const result = await this.table.findOne({ where: { name } });
-    return result == null ? null : result.get('data');
+    return fs.readFile(path.join(this._storageDir, name)).catch(() => null)
   },
 
   _settingsName: 'settings',
@@ -73,8 +62,16 @@ const storage = {
     return result ? JSON.parse(result) : {};
   },
 
+  _lastMessagesName: 'lastMessages',
+  async parseLastMessages() {
+    const result = await this.get(this._lastMessagesName);
+    return result ? 
+      bidirectionalMap(state.settings.lastMessageStorage * 2, JSON.parse(result)) : 
+      bidirectionalMap(state.settings.lastMessageStorage * 2);
+  },
+
   async save() {
-    for await (const field of [this._settingsName, this._chatsName, this._contactsName]) {
+    for await (const field of [this._settingsName, this._chatsName, this._contactsName, this._lastMessagesName]) {
       await this.upsert(field, JSON.stringify(state[field]));
     }
   },

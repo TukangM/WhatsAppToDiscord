@@ -73,7 +73,9 @@ client.on('whatsappMessage', async (message) => {
     if (dcMessage.channel.type === 'GUILD_NEWS' && state.settings.Publish) {
       await dcMessage.crosspost();
     }
-    state.lastMessages[dcMessage.id] = message.id;
+
+    if (message.id != null)
+      state.lastMessages[dcMessage.id] = message.id;
   }
 });
 
@@ -84,7 +86,11 @@ client.on('whatsappReaction', async (reaction) => {
 
   const channel = await utils.discord.getChannel(channelId);
   const message = await channel.messages.fetch(messageId);
-  await message.react(reaction.text);
+  await message.react(reaction.text).catch(async err => {
+    if (err.code === 10014) {
+      await channel.send(`Unknown emoji reaction (${reaction.text}) received. Check WhatsApp app to see it.`);
+    }
+  });
 });
 
 client.on('whatsappCall', async ({ call, jid }) => {
@@ -211,24 +217,7 @@ const commands = {
     await controlChannel.send('Disabled uploading files to WhatsApp!');
   },
   async help() {
-    await controlChannel.send(
-      [
-        '`start <number with country code or name>`: Starts a new conversation.',
-        '`list`: Lists existing chats.',
-        '`list <chat name to search>`: Finds chats that contain the given argument.',
-        '`listWhitelist`: Lists all whitelisted conversations.',
-        '`addToWhitelist <channel name>`: Adds specified conversation to the whitelist.',
-        '`removeFromWhitelist <channel name>`: Removes specified conversation from the whitelist.',
-        '`resync`: Re-syncs your contacts and groups.',
-        '`enableWAUpload`: Starts uploading attachments sent to Discord to WhatsApp.',
-        '`disableWAUpload`: Stop uploading attachments sent to Discord to WhatsApp.',
-        '`enableDCPrefix`: Starts adding your Discord username to messages sent to WhatsApp.',
-        '`disableDCPrefix`: Stops adding your Discord username to messages sent to WhatsApp.',
-        "`enableWAPrefix`: Starts adding sender's name to messages sent to Discord.",
-        "`disableWAPrefix`: Stops adding sender's name to messages sent to Discord.",
-        '`ping`: Sends "Pong! <Now - Time Message Sent>ms" back.',
-      ].join('\n'),
-    );
+    await controlChannel.send('See all the available commands at https://fklc.github.io/WhatsAppToDiscord/#/commands');
   },
   async resync() {
     await state.waClient.authState.keys.set({
@@ -268,8 +257,32 @@ const commands = {
     state.settings.Publish = false;
     await controlChannel.send(`Disabled publishing messages sent to news channels.`);
   },
+  async enablechangenotifications() {
+    state.settings.ChangeNotifications = true;
+    await controlChannel.send(`Enabled profile picture change and status update notifications.`);
+  },
+  async disablechangenotifications() {
+    state.settings.ChangeNotifications = false;
+    await controlChannel.send(`Disabled profile picture change and status update notifications.`);
+  },
+  async autosaveinterval(_message, params) {
+    if (params.length !== 1) {
+      await controlChannel.send("Usage: autoSaveInterval <seconds>\nExample: autoSaveInterval 60");
+      return;
+    }
+    state.settings.autoSaveInterval = +params[0];
+    await controlChannel.send(`Changed auto save interval to ${params[0]}.`);
+  },
+  async lastmessagestorage(_message, params) {
+    if (params.length !== 1) {
+      await controlChannel.send("Usage: lastMessageStorage <size>\nExample: lastMessageStorage 1000");
+      return;
+    }
+    state.settings.lastMessageStorage = +params[0];
+    await controlChannel.send(`Changed last message storage size to ${params[0]}.`);
+  },
   async unknownCommand(message) {
-    controlChannel.send(`Unknown command: \`${message.content}\`\nType \`help\` to see available commands`);
+    await controlChannel.send(`Unknown command: \`${message.content}\`\nType \`help\` to see available commands`);
   },
 };
 
@@ -281,10 +294,9 @@ client.on('messageCreate', async (message) => {
   if (message.channel === controlChannel) {
     const command = message.content.toLowerCase().split(' ');
     await (commands[command[0]] || commands.unknownCommand)(message, command.slice(1));
-  } else if (state.settings.Categories.includes(message.channel?.parent?.id)) {
+  } else {
     const jid = utils.discord.channelIdToJid(message.channel.id);
-    if (!jid) {
-      message.channel.send("Couldn't find the user. Restart the bot, or manually delete this channel and start a new chat using the `start` command.");
+    if (jid == null) {
       return;
     }
 
@@ -293,38 +305,36 @@ client.on('messageCreate', async (message) => {
 });
 
 client.on('messageReactionAdd', async (reaction, user) => {
-  if (!state.settings.Categories.includes(reaction.message.channel?.parent?.id)) return;
+  const jid = utils.discord.channelIdToJid(reaction.message.channel.id);
+  if (jid == null) {
+    return;
+  }
   const messageId = state.lastMessages[reaction.message.id];
   if (messageId == null) {
-    await reaction.message.channel.send("Couldn't send the reaction. You can only react to messages received after the bot went online.");
+    await reaction.message.channel.send("Couldn't send the reaction. You can only react to last 500 messages.");
     return;
   }
   if (user.id === state.dcClient.user.id) {
     return;
   }
-  const jid = utils.discord.channelIdToJid(reaction.message.channel.id);
-  if (!jid) {
-    reaction.message.channel.send("Couldn't find the user. Restart the bot, or manually delete this channel and start a new chat using the `start` command.");
-    return;
-  }
+  
   state.waClient.ev.emit('discordReaction', { jid, reaction, removed: false });
 });
 
 client.on('messageReactionRemove', async (reaction, user) => {
-  if (!state.settings.Categories.includes(reaction.message.channel?.parent?.id)) return;
+  const jid = utils.discord.channelIdToJid(reaction.message.channel.id);
+  if (jid == null) {
+    return;
+  }
   const messageId = state.lastMessages[reaction.message.id];
   if (messageId == null) {
-    await reaction.message.channel.send("Couldn't send the reaction. You can only react to messages received after the bot went online.");
+    await reaction.message.channel.send("Couldn't remove the reaction. You can only react to last 500 messages.");
     return;
   }
   if (user.id === state.dcClient.user.id) {
     return;
   }
-  const jid = utils.discord.channelIdToJid(reaction.message.channel.id);
-  if (!jid) {
-    reaction.message.channel.send("Couldn't find the user. Restart the bot, or manually delete this channel and start a new chat using the `start` command.");
-    return;
-  }
+  
   state.waClient.ev.emit('discordReaction', { jid, reaction, removed: true });
 });
 
