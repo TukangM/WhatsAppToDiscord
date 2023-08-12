@@ -1,1 +1,10 @@
 node_modules/
+logs.txt
+storage.db
+downloads/
+*.exe
+*.oldVersion
+build/
+*.bat
+storage/
+out.js
